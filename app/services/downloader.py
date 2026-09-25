@@ -18,11 +18,12 @@ def sanitize_filename(value: str, fallback: str = "audio") -> str:
 
 
 def _safe_template() -> str:
-    return str(settings.downloads_dir / "%(uploader)s - %(title)s.%(ext)s")
+    # yt-dlp must never resolve its template relative to the process cwd.
+    return str(settings.downloads_dir.resolve() / "%(uploader)s - %(title)s.%(ext)s")
 
 
 def download(url: str, fmt: str, quality: str, update: Callable[[str, float, str | None], None],
-             entries: list[str] | None = None) -> list[str]:
+             entries: list[str] | None = None) -> list[dict[str, str | int]]:
     ffmpeg = require_ffmpeg(settings.ffmpeg_path)
     settings.downloads_dir.mkdir(parents=True, exist_ok=True)
     update("Baixando áudio", 15, None)
@@ -43,7 +44,17 @@ def download(url: str, fmt: str, quality: str, update: Callable[[str, float, str
         logger.warning("Download falhou: %s", type(exc).__name__)
         raise RuntimeError("Não foi possível baixar ou converter o áudio. Verifique a URL, permissões e espaço em disco.") from exc
     update("Finalizando", 95, None)
-    after = [p for p in settings.downloads_dir.rglob("*") if p.is_file() and p.resolve() not in before and p.name != ".gitkeep"]
+    expected_suffix = f".{fmt.lower()}"
+    after = [
+        p for p in settings.downloads_dir.rglob("*")
+        if p.is_file() and p.resolve() not in before and p.name != ".gitkeep"
+        and p.suffix.lower() == expected_suffix
+    ]
+    if not after or any(p.stat().st_size <= 0 for p in after):
+        raise RuntimeError(
+            "O áudio não foi convertido corretamente: o arquivo final não foi encontrado "
+            "ou está vazio. Verifique o FFmpeg e tente novamente."
+        )
     result = []
     for path in after:
         # Keep yt-dlp output confined to the configured directory and normalize
@@ -61,7 +72,16 @@ def download(url: str, fmt: str, quality: str, update: Callable[[str, float, str
             counter += 1
         if target.resolve() != path.resolve():
             path.rename(target)
-        result.append(target.name)
+        if not target.is_file() or target.stat().st_size <= 0:
+            raise RuntimeError(
+                "O áudio não foi convertido corretamente: o arquivo final não foi encontrado "
+                "ou está vazio. Verifique o FFmpeg e tente novamente."
+            )
+        result.append({
+            "filename": target.name,
+            "format": target.suffix.lstrip(".").lower(),
+            "size": target.stat().st_size,
+        })
     return result
 
 

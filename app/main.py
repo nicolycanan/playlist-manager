@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from .schemas import UrlRequest, DownloadRequest, InfoResponse, DownloadResponse, JobResponse
@@ -42,7 +42,7 @@ def _run_job(job_id: str, payload: DownloadRequest):
     jobs[job_id]["status"] = "Obtendo informações"
     try:
         files = download(payload.url, payload.format.value, payload.quality.value, update, payload.entries)
-        jobs[job_id].update(status="Concluído", progress=100, files=files)
+        jobs[job_id].update(status="completed", progress=100, files=files)
     except Exception as exc:
         message = str(exc) if isinstance(exc, RuntimeError) else (
             "Não foi possível concluir a extração. Verifique a URL, o FFmpeg e o espaço em disco."
@@ -67,6 +67,27 @@ async def youtube_download(payload: DownloadRequest, background_tasks: Backgroun
 async def list_downloads():
     from .config import settings
     return {"files": [p.name for p in settings.downloads_dir.iterdir() if p.is_file() and p.name != ".gitkeep"]}
+
+
+@app.get("/api/downloads/{job_id}/file")
+async def download_file(job_id: str):
+    from .config import settings
+
+    job = jobs.get(job_id)
+    if not job or job.get("status") != "completed" or not job.get("files"):
+        raise HTTPException(404, "Arquivo do job não encontrado")
+    filename = job["files"][0].get("filename")
+    if not isinstance(filename, str):
+        raise HTTPException(404, "Arquivo do job não encontrado")
+    root = settings.downloads_dir.resolve()
+    candidate = (root / filename).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        raise HTTPException(404, "Arquivo do job não encontrado")
+    if not candidate.is_file() or candidate.stat().st_size <= 0:
+        raise HTTPException(404, "Arquivo do job não encontrado")
+    return FileResponse(candidate, filename=candidate.name, media_type="application/octet-stream")
 
 
 @app.get("/api/downloads/{job_id}", response_model=JobResponse)

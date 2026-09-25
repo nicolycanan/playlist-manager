@@ -55,9 +55,15 @@ class DownloadResponse(BaseModel):
     status: str
 
 
+class FileMetadata(BaseModel):
+    filename: str
+    format: str
+    size: int
+
+
 class JobResponse(BaseModel):
     job_id: str
     status: str
     progress: float = 0
     message: str | None = None
-    files: list[str] = []
+    files: list[FileMetadata] = []
