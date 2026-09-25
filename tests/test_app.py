@@ -77,6 +77,34 @@ def test_download_rejects_missing_physical_conversion(monkeypatch, tmp_path):
         assert "arquivo final" in str(exc)
 
 
+def test_download_uses_postprocessor_final_path(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.downloader.settings.downloads_dir", tmp_path)
+    monkeypatch.setattr("app.services.downloader.require_ffmpeg", lambda _: "ffmpeg")
+
+    class FakeYDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def download(self, urls):
+            output = tmp_path / "Canal - Título.mp3"
+            output.write_bytes(b"converted")
+            self.options["postprocessor_hooks"][0]({
+                "status": "finished",
+                "info_dict": {"filepath": str(output)},
+            })
+
+    monkeypatch.setattr("app.services.downloader.yt_dlp.YoutubeDL", FakeYDL)
+    result = download("https://www.youtube.com/watch?v=test", "mp3", "192", lambda *args: None)
+    assert result[0]["filename"] == "Canal - Título.mp3"
+    assert result[0]["size"] == len(b"converted")
+
+
 def test_download_file_endpoint_and_traversal_protection(monkeypatch, tmp_path):
     monkeypatch.setattr("app.config.settings.downloads_dir", tmp_path)
     output = tmp_path / "demo.mp3"

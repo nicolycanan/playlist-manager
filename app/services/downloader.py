@@ -37,6 +37,25 @@ def download(url: str, fmt: str, quality: str, update: Callable[[str, float, str
     if entries:
         options["playlist_items"] = ",".join(entries)
     before = {p.resolve() for p in settings.downloads_dir.rglob("*") if p.is_file()}
+    final_paths: list[Path] = []
+
+    def postprocessor_hook(event: dict):
+        if event.get("status") != "finished":
+            return
+        info = event.get("info_dict") or {}
+        candidates = [info.get("filepath")]
+        candidates.extend(
+            item.get("filepath")
+            for item in info.get("requested_downloads") or []
+            if isinstance(item, dict)
+        )
+        for candidate in candidates:
+            if candidate:
+                path = Path(candidate).resolve()
+                if path not in final_paths:
+                    final_paths.append(path)
+
+    options["postprocessor_hooks"] = [postprocessor_hook]
     try:
         with _lock, yt_dlp.YoutubeDL(options) as ydl:
             ydl.download([url])
@@ -44,26 +63,29 @@ def download(url: str, fmt: str, quality: str, update: Callable[[str, float, str
         logger.warning("Download falhou: %s", type(exc).__name__)
         raise RuntimeError("Não foi possível baixar ou converter o áudio. Verifique a URL, permissões e espaço em disco.") from exc
     update("Finalizando", 95, None)
-    expected_suffix = f".{fmt.lower()}"
-    after = [
-        p for p in settings.downloads_dir.rglob("*")
-        if p.is_file() and p.resolve() not in before and p.name != ".gitkeep"
-        and p.suffix.lower() == expected_suffix
-    ]
-    if not after or any(p.stat().st_size <= 0 for p in after):
+    after = final_paths
+    root = settings.downloads_dir.resolve()
+    valid_paths = []
+    for path in after:
+        print(f"[DEBUG] Tentando validar a existência do arquivo em: {path}")
+        exists = path.exists()
+        print(f"[DEBUG] O arquivo existe? {exists}")
+        try:
+            path.relative_to(root)
+        except ValueError:
+            logger.warning("Ignorando arquivo final fora da pasta de downloads")
+            continue
+        if exists and path.stat().st_size > 0:
+            valid_paths.append(path)
+    if not valid_paths:
         raise RuntimeError(
             "O áudio não foi convertido corretamente: o arquivo final não foi encontrado "
             "ou está vazio. Verifique o FFmpeg e tente novamente."
         )
     result = []
-    for path in after:
+    for path in valid_paths:
         # Keep yt-dlp output confined to the configured directory and normalize
         # metadata-derived names before exposing them to the UI.
-        try:
-            path.resolve().relative_to(settings.downloads_dir.resolve())
-        except ValueError:
-            logger.warning("Ignorando arquivo fora da pasta de downloads")
-            continue
         safe = sanitize_filename(path.stem) + path.suffix.lower()
         target = settings.downloads_dir / safe
         counter = 1
